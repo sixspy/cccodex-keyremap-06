@@ -18,17 +18,21 @@
   .box{border:1px solid var(--line);background:var(--panel);padding:12px;margin-bottom:12px}
   .box h2{margin:0 0 10px;font-size:13px;color:var(--muted);font-weight:700;letter-spacing:.08em;text-transform:uppercase}
   table{width:100%;border-collapse:collapse;font-size:12px;font-family:Consolas,monospace}
-  th,td{padding:8px 4px;border-bottom:1px solid #2a2a2a;text-align:left}
+  th,td{padding:8px 4px;border-bottom:1px solid #2a2a2a;text-align:left;vertical-align:top}
   input{width:100%;background:#000;border:1px solid #444;color:#fff;padding:10px;font-family:Consolas,monospace;margin:6px 0 10px}
   .primary{background:var(--accent);color:#111;border:0;padding:10px 12px;font-weight:700;cursor:pointer;width:100%}
+  .danger{background:#3a1414;color:#ff9a9a;border:1px solid #7a2b2b;padding:10px 12px;font-weight:700;cursor:pointer;width:100%}
   .ghost{background:transparent;border:1px solid #666;color:#ddd;padding:6px 8px;cursor:pointer}
   .login{max-width:420px;margin:14vh auto;background:#111;border:1px solid #333;padding:22px}
   .err{color:var(--bad);min-height:18px;font-size:12px}
-  .pill{border:1px solid #444;padding:2px 6px;font-size:11px;color:var(--muted)}
   .ok{color:var(--ok)}.bad{color:var(--bad)}
-  .tabs{display:flex;gap:8px;margin-bottom:10px}
-  .tabs button{background:#000;border:1px solid #333;color:#aaa;padding:6px 8px;cursor:pointer}
+  .pill{border:1px solid #444;padding:2px 6px;font-size:11px;color:var(--muted)}
+  .pill.pol{border-color:var(--accent);color:var(--accent)}
+  .tabs{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+  .tabs button{background:#000;border:1px solid #333;color:#aaa;padding:6px 8px;cursor:pointer;font-size:12px}
   .tabs button.on{border-color:var(--accent);color:var(--accent)}
+  .check{font-size:12px;padding:6px 2px;border-bottom:1px solid #222}
+  .muted{color:var(--muted);font-size:11px}
 </style>
 </head>
 <body>
@@ -50,10 +54,12 @@ createApp({
   setup(){
     const token=ref(localStorage.getItem('keyremap_token')||'');
     const user=ref(localStorage.getItem('keyremap_user')||'');
-    const username=ref('admin'), password=ref('123456'), err=ref(''), actionErr=ref('');
+    const username=ref('admin'), password=ref('123456'), err=ref(''), actionErr=ref(''), tombErr=ref('');
     const leftTab=ref(0), rightTab=ref(0);
     const versions=ref([]), mappings=ref([]), formal=ref([]), conflicts=ref([]);
-    const oldKey=ref('OLD-B1');
+    const tombstones=ref([]), history=ref([]), audits=ref([]), violations=ref([]);
+    const policy=ref(null), verify=ref(null);
+    const oldKey=ref('OLD-B1'), tombKey=ref('OLD-A1');
     function auth(){return {Authorization:'Bearer '+token.value,'Content-Type':'application/json'};}
     async function login(){
       err.value='';
@@ -80,6 +86,18 @@ createApp({
       formal.value=Array.isArray(f.items)?f.items:[];
       const c=await loadJson('/api/conflicts'); if(c===null) return;
       conflicts.value=Array.isArray(c.items)?c.items:[];
+      const t=await loadJson('/api/tombstones'); if(t===null) return;
+      tombstones.value=Array.isArray(t.items)?t.items:[];
+      const h=await loadJson('/api/formal-history'); if(h===null) return;
+      history.value=Array.isArray(h.items)?h.items:[];
+      const a=await loadJson('/api/key-change-audits'); if(a===null) return;
+      audits.value=Array.isArray(a.items)?a.items:[];
+      const vio=await loadJson('/api/violations'); if(vio===null) return;
+      violations.value=Array.isArray(vio.items)?vio.items:[];
+      const p=await loadJson('/api/policy'); if(p===null) return;
+      policy.value=p;
+      const vc=await loadJson('/api/tombstone-verification'); if(vc===null) return;
+      verify.value=vc;
     }
     async function doRemap(){
       actionErr.value='';
@@ -87,19 +105,32 @@ createApp({
       const j=await r.json(); actionErr.value=r.ok?('正式键 '+j.entity_key):(j.detail||'失败');
       await refresh();
     }
+    async function doEntomb(){
+      tombErr.value='';
+      const r=await fetch('/api/tombstone',{method:'POST',headers:auth(),body:JSON.stringify({old_key:tombKey.value})});
+      const j=await r.json();
+      tombErr.value=r.ok
+        ? ('已立碑 #'+j.tombstone_id+' · '+j.policy+(j.formal_unchanged!==undefined?(' · 正式行未动 '+j.formal_unchanged):(' · 改写 '+j.formal_rewritten)))
+        : (j.detail||'失败');
+      await refresh();
+    }
     onMounted(()=>{if(token.value)refresh();});
-    return {token,user,username,password,err,actionErr,leftTab,rightTab,versions,mappings,formal,conflicts,oldKey,login,logout,doRemap};
+    return {token,user,username,password,err,actionErr,tombErr,leftTab,rightTab,versions,mappings,formal,
+      conflicts,tombstones,history,audits,violations,policy,verify,oldKey,tombKey,login,logout,doRemap,doEntomb};
   },
   template:`
   <div v-if="!token" class="login">
     <h1 style="margin-top:0">实体键<em style="color:#ff7a18;font-style:normal">桥</em></h1>
-    <p style="color:#9a9a9a">左侧映射，右侧正式区与冲突。入站旧键必须先重映。</p>
+    <p style="color:#9a9a9a">左侧映射与墓碑，右侧正式区、审计与核证。入站旧键必须先重映。</p>
     <label>用户名</label><input v-model="username"/><label>密码</label><input type="password" v-model="password"/>
     <div class="err">{{err}}</div><button class="primary" @click="login">接通键桥</button>
   </div>
   <div v-if="token">
     <div class="top">
-      <h1>实体键<em>桥</em> <span class="pill">旧键 → 正式键</span></h1>
+      <h1>实体键<em>桥</em>
+        <span class="pill">旧键 → 正式键</span>
+        <span class="pill pol" v-if="policy">{{policy.label}}{{policy.locked?' · 已锁定不可分叉':''}}</span>
+      </h1>
       <div>{{user}} <button class="ghost" @click="logout">退出</button></div>
     </div>
     <div class="split">
@@ -107,6 +138,7 @@ createApp({
         <div class="tabs">
           <button :class="{on:leftTab===0}" @click="leftTab=0">映射版本</button>
           <button :class="{on:leftTab===1}" @click="leftTab=1">执行重映</button>
+          <button :class="{on:leftTab===2}" @click="leftTab=2">旧键墓碑</button>
         </div>
         <div class="box" v-show="leftTab===0">
           <h2>Map Versions</h2>
@@ -114,7 +146,9 @@ createApp({
           <tbody><tr v-for="v in versions" :key="v.id"><td>{{v.version}}</td><td>{{v.status}}</td><td>{{v.effective_from}}</td></tr></tbody></table>
           <h2 style="margin-top:14px">Mappings</h2>
           <table><thead><tr><th>old</th><th>new</th><th>kind</th></tr></thead>
-          <tbody><tr v-for="m in mappings" :key="m.id"><td>{{m.old_key}}</td><td class="ok">{{m.new_key}}</td><td>{{m.kind}}</td></tr></tbody></table>
+          <tbody><tr v-for="m in mappings" :key="m.id">
+            <td>{{m.old_key}}</td><td class="ok">{{m.new_key}}</td><td>{{m.kind}}</td>
+          </tr></tbody></table>
         </div>
         <div class="box" v-show="leftTab===1">
           <h2>Ingress Remap</h2>
@@ -123,12 +157,27 @@ createApp({
           <button class="primary" @click="doRemap">重映入正式区</button>
           <div class="err">{{actionErr}}</div>
         </div>
+        <div class="box" v-show="leftTab===2">
+          <h2>Old-Key Tombstones（物化不可变）</h2>
+          <label>待废弃 old_key</label>
+          <input v-model="tombKey"/>
+          <button class="danger" @click="doEntomb">立碑（按全局口径处置）</button>
+          <div class="err">{{tombErr}}</div>
+          <table style="margin-top:10px"><thead><tr><th>old_key</th><th>version</th><th>碑载新键</th><th>policy</th><th>at</th></tr></thead>
+          <tbody><tr v-for="t in tombstones" :key="t.id">
+            <td class="bad">{{t.old_key}}</td><td>{{t.map_version}}</td><td>{{t.new_key_at_tombstone}}</td>
+            <td><span class="pill pol">{{t.policy}}</span></td><td class="muted">{{t.tombstone_at}}</td>
+          </tr></tbody></table>
+        </div>
       </div>
       <div class="bridge"></div>
       <div class="pane">
         <div class="tabs">
           <button :class="{on:rightTab===0}" @click="rightTab=0">正式区</button>
           <button :class="{on:rightTab===1}" @click="rightTab=1">冲突队列</button>
+          <button :class="{on:rightTab===2}" @click="rightTab=2">只读史迹</button>
+          <button :class="{on:rightTab===3}" @click="rightTab=3">改键审计</button>
+          <button :class="{on:rightTab===4}" @click="rightTab=4">核证卡</button>
         </div>
         <div class="box" v-show="rightTab===0">
           <h2>Formal Zone</h2>
@@ -139,6 +188,38 @@ createApp({
           <h2>Conflicts</h2>
           <table><thead><tr><th>old</th><th>reason</th><th>status</th></tr></thead>
           <tbody><tr v-for="c in conflicts" :key="c.id"><td class="bad">{{c.old_key}}</td><td>{{c.reason}}</td><td>{{c.status}}</td></tr></tbody></table>
+        </div>
+        <div class="box" v-show="rightTab===2">
+          <h2>Formal History（只追加）</h2>
+          <table><thead><tr><th>formal</th><th>from</th><th>key</th><th>event</th><th>at</th></tr></thead>
+          <tbody><tr v-for="h in history" :key="h.id"><td>{{h.formal_id}}</td><td>{{h.mapped_from}}</td><td class="ok">{{h.entity_key}}</td><td>{{h.event}}</td><td class="muted">{{h.at}}</td></tr></tbody></table>
+        </div>
+        <div class="box" v-show="rightTab===3">
+          <h2>Key-Change Audit Generations</h2>
+          <table><thead><tr><th>gen</th><th>formal</th><th>old</th><th>from→to</th><th>墓碑</th><th>at</th></tr></thead>
+          <tbody><tr v-for="a in audits" :key="a.id">
+            <td>{{a.generation}}</td><td>{{a.formal_id}}</td><td>{{a.old_key_ref}}</td>
+            <td>{{a.from_entity_key}} → <span class="ok">{{a.to_entity_key}}</span></td>
+            <td>#{{a.tombstone_id}}</td><td class="muted">{{a.changed_at}}</td>
+          </tr>
+          <tr v-if="!audits.length"><td colspan="6" class="muted">无改键审计（只读口径下应为空）</td></tr></tbody></table>
+        </div>
+        <div class="box" v-show="rightTab===4">
+          <h2>Tombstone Verification
+            <span :class="verify&&verify.ok?'ok':'bad'">{{verify?(verify.ok?'全部通过':'存在异常'):''}}</span>
+          </h2>
+          <div v-if="verify" class="muted" style="margin-bottom:8px">
+            口径 {{verify.policy_label}} · 墓碑 {{verify.counts.tombstones}} · 正式 {{verify.counts.formal}}
+            · 史迹 {{verify.counts.history}} · 审计 {{verify.counts.audits}} · 拒进 {{verify.counts.violations}}
+          </div>
+          <div v-for="chk in (verify?verify.checks:[])" :key="chk.check" class="check">
+            <span :class="chk.ok?'ok':'bad'">{{chk.ok?'✔':'✘'}}</span> {{chk.check}}
+            <div class="muted">{{chk.detail}}</div>
+          </div>
+          <h2 style="margin-top:14px">拒进留痕</h2>
+          <table><thead><tr><th>old</th><th>detail</th><th>at</th></tr></thead>
+          <tbody><tr v-for="v in violations" :key="v.id"><td class="bad">{{v.old_key}}</td><td>{{v.detail}}</td><td class="muted">{{v.at}}</td></tr>
+          <tr v-if="!violations.length"><td colspan="3" class="muted">无拒进记录</td></tr></tbody></table>
         </div>
       </div>
     </div>
